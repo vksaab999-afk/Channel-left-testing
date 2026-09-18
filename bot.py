@@ -1,5 +1,6 @@
 import os
 import logging
+import asyncio
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 from pymongo import MongoClient
@@ -28,7 +29,7 @@ MONGO_URI = os.environ.get("MONGO_URI")
 
 # Source Chat & Retention Settings
 SOURCE_CHAT_ID = int(os.environ.get("STORAGE_CHAT_ID", "5785924075"))
-TARGET_MSG_ID = 49  # Message ID 49 for retention DM
+TARGET_MSG_ID = 49  # Message ID 49
 
 # Custom Emoji IDs for Buttons
 EMOJI_JOIN = "4990182601252668309"
@@ -95,14 +96,14 @@ def styled_button(text, *, style, icon_custom_emoji_id=None, url=None, callback_
         except TypeError:
             return InlineKeyboardButton(text=text, **action)
 
-# --- JOIN REQUEST HANDLER (Silent ID Saving) ---
+# --- JOIN REQUEST HANDLER ---
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     request = update.chat_join_request
     user = request.from_user
     save_user_to_mongo(user.id, user.first_name, user.username)
     logging.info(f"User {user.id} saved on Join Request.")
 
-# --- MEMBER LEFT HANDLER (Instant Personal DM with Msg 49 + Buttons) ---
+# --- MEMBER LEFT HANDLER ---
 async def handle_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = update.chat_member
     old_status = result.old_chat_member.status
@@ -210,10 +211,8 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_users = users_collection.count_documents({})
         await update.message.reply_text(f"📊 **Total Users:** `{total_users}`", parse_mode="Markdown")
 
-# --- MAIN RUNNER ---
-def main():
-    Thread(target=run_web_server, daemon=True).start()
-
+# --- ASYNC MAIN RUNNER (Fixes Python 3.14 Event Loop Crash) ---
+async def start_bot():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
@@ -223,8 +222,14 @@ def main():
     app.add_handler(ChatMemberHandler(handle_member_left, ChatMemberHandler.CHAT_MEMBER))
     app.add_handler(MessageHandler(filters.User(ADMIN_IDS) & ~filters.COMMAND, auto_broadcast))
 
-    print("Bot is running...")
-    app.run_polling(allowed_updates=["message", "chat_join_request", "chat_member"], drop_pending_updates=True)
+    print("Bot is running smoothly...")
+    
+    async with app:
+        await app.start()
+        await app.updater.start_polling(allowed_updates=["message", "chat_join_request", "chat_member"], drop_pending_updates=True)
+        # Keeps bot running indefinitely
+        await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    main()
+    Thread(target=run_web_server, daemon=True).start()
+    asyncio.run(start_bot())
