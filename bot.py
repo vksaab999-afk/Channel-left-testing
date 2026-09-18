@@ -1,6 +1,5 @@
 import os
 import logging
-import asyncio
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from threading import Thread
 from pymongo import MongoClient
@@ -29,7 +28,7 @@ MONGO_URI = os.environ.get("MONGO_URI")
 
 # Source Chat & Retention Settings
 SOURCE_CHAT_ID = int(os.environ.get("STORAGE_CHAT_ID", "5785924075"))
-TARGET_MSG_ID = 49  # Message ID 49 set for left members
+TARGET_MSG_ID = 49  # Message ID 49 for retention DM
 
 # Custom Emoji IDs for Buttons
 EMOJI_JOIN = "4990182601252668309"
@@ -57,7 +56,7 @@ def save_user_to_mongo(user_id, first_name, username):
     except Exception as e:
         logging.error(f"MongoDB Error: {e}")
 
-# --- KEEP-ALIVE WEB SERVER ---
+# --- KEEP-ALIVE WEB SERVER FOR RENDER ---
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -78,7 +77,7 @@ def run_web_server():
     server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
     server.serve_forever()
 
-# --- STYLED BUTTON HELPER (Colorful Buttons) ---
+# --- STYLED BUTTON HELPER ---
 def styled_button(text, *, style, icon_custom_emoji_id=None, url=None, callback_data=None):
     action = {"url": url} if url else {"callback_data": callback_data or "noop"}
     modern = {"text": text, **action, "style": style}
@@ -96,44 +95,40 @@ def styled_button(text, *, style, icon_custom_emoji_id=None, url=None, callback_
         except TypeError:
             return InlineKeyboardButton(text=text, **action)
 
-# --- JOIN REQUEST HANDLER (Silent MongoDB Save - Manual Approve Mode) ---
+# --- JOIN REQUEST HANDLER (Silent ID Saving) ---
 async def handle_join_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
     request = update.chat_join_request
     user = request.from_user
     save_user_to_mongo(user.id, user.first_name, user.username)
-    logging.info(f"User {user.id} join request received and saved to Mongo.")
+    logging.info(f"User {user.id} saved on Join Request.")
 
-# --- MEMBER LEFT HANDLER (Sends Msg 49 with Colorful Buttons) ---
+# --- MEMBER LEFT HANDLER (Instant Personal DM with Msg 49 + Buttons) ---
 async def handle_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = update.chat_member
     old_status = result.old_chat_member.status
     new_status = result.new_chat_member.status
 
-    # Jab banda channel chhodega ya remove hoga
     if old_status in ["member", "administrator"] and new_status in ["left", "kicked"]:
         user = result.from_user
         user_id = user.id
 
-        # MongoDB verification check
         saved_user = users_collection.find_one({"user_id": user_id})
         
         if saved_user:
             try:
-                # Green (Success) and Red (Danger) Custom Buttons
                 retention_keyboard = [
                     [styled_button(" JOIN CHANNEL", style="success", icon_custom_emoji_id=EMOJI_JOIN, url="https://t.me/+QiuG0TOuhe81MTI1")],
                     [styled_button(" LOSS RECOVERY", style="danger", icon_custom_emoji_id=EMOJI_RECOVERY, url="https://t.me/m/wbdDfR5tZTI1")]
                 ]
                 reply_markup = InlineKeyboardMarkup(retention_keyboard)
 
-                # Send Message ID 49 from Source Chat
                 await context.bot.copy_message(
                     chat_id=user_id,
                     from_chat_id=SOURCE_CHAT_ID,
                     message_id=TARGET_MSG_ID,
                     reply_markup=reply_markup
                 )
-                logging.info(f"Message 49 sent to left user {user_id}")
+                logging.info(f"Retention Msg 49 sent to {user_id}")
             except Exception as e:
                 logging.error(f"Error sending DM to left user {user_id}: {e}")
 
@@ -141,7 +136,7 @@ async def handle_member_left(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     save_user_to_mongo(user.id, user.first_name, user.username)
-    await update.message.reply_text("👋 Welcome to the Bot!")
+    await update.message.reply_text("👋 Welcome!")
 
 # --- BROADCAST LOGIC ---
 async def execute_broadcast(message_to_broadcast, context, admin_chat_id):
@@ -178,7 +173,7 @@ async def execute_broadcast(message_to_broadcast, context, admin_chat_id):
         parse_mode="Markdown"
     )
 
-# --- DIRECT AUTOMATIC BROADCAST ---
+# --- AUTOMATIC BROADCAST ---
 async def auto_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if update.effective_user.id not in ADMIN_IDS:
@@ -187,7 +182,7 @@ async def auto_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     await execute_broadcast(msg, context, update.effective_user.id)
 
-# --- COMMAND BASED BROADCAST ---
+# --- COMMAND BROADCAST ---
 async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     if update.effective_user.id not in ADMIN_IDS:
@@ -207,7 +202,7 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     pass
             await msg.reply_text("✅ Broadcast Completed!")
         else:
-            await msg.reply_text("⚠️ Kripya message ke sath /broadcast likhein ya kisi message par reply karke /broadcast bhejein.")
+            await msg.reply_text("⚠️ Message ke sath /broadcast likhein ya kisi msg par reply karein.")
 
 # --- STATS COMMAND ---
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -215,18 +210,12 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_users = users_collection.count_documents({})
         await update.message.reply_text(f"📊 **Total Users:** `{total_users}`", parse_mode="Markdown")
 
+# --- MAIN RUNNER ---
 def main():
     Thread(target=run_web_server, daemon=True).start()
 
-    try:
-        loop = asyncio.get_event_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Handlers Registration
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
@@ -235,7 +224,7 @@ def main():
     app.add_handler(MessageHandler(filters.User(ADMIN_IDS) & ~filters.COMMAND, auto_broadcast))
 
     print("Bot is running...")
-    app.run_polling(allowed_updates=["message", "chat_join_request", "chat_member"])
+    app.run_polling(allowed_updates=["message", "chat_join_request", "chat_member"], drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
